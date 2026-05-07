@@ -1,8 +1,8 @@
 ﻿---
 trials:              1000
-fast arrived first:  1000 (100.00%)
-  when fast sent 1st: 500/500 (100.00%)
+fast arrived first:  999 (99.90%)
+  when fast sent 1st: 499/500 (99.80%)
   when fast sent 2nd: 500/500 (100.00%)
-one-sided p-value:   9.33e-302  (H0: no timing difference)
-Wilson 95% CI:       [0.996, 1.000]
+one-sided p-value:   9.34e-299  (H0: no timing difference)
+Wilson 95% CI:       [0.994, 1.000]
 

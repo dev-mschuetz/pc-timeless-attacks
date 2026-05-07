@@ -57,10 +57,62 @@ Prints a table mapping iteration counts to nanoseconds per call and estimates th
 ## Build
 
 ```bash
-go build -o timeless.exe timeless.go
+go build -o timeless.exe .
 ```
 
 Requires Go 1.22+ and the `golang.org/x/net` module (resolved automatically via `go.sum`).
+
+## Running an Experiment
+
+### Step 1 — Calibrate (pick a `-slow-iter` value)
+
+Run calibrate on the machine that will act as the server to find how many iterations map to your target delay:
+
+```powershell
+.\timeless.exe -mode=calibrate
+```
+
+Look at the `ns_per_call` column and pick an iteration count that matches your target burn time (e.g. 500 ns, 2 µs, 10 µs). Prefer `-slow-iter` over `-slow-us` — it doesn't call `time.Now()` so it is not affected by OS timer granularity.
+
+### Step 2 — Quick manual test
+
+In one terminal, start the server:
+
+```powershell
+.\timeless.exe -mode=server -slow-iter=1000
+```
+
+In a second terminal, run the client:
+
+```powershell
+.\timeless.exe -mode=client -trials=1000 -progress=100
+```
+
+Check the output: if `/fast` wins significantly more than 50 % of trials and the p-value is well below 0.05, the timing asymmetry is detectable.
+
+### Step 3 — Automated sweep
+
+Use `run-experiment.ps1` to sweep across multiple delay values in one shot. It starts a fresh server per data point, saves raw output, and writes a summary CSV.
+
+```powershell
+# Iteration-mode sweep (recommended — scheduler-free)
+# Values chosen from calibration: 1000->835ns, 3000->2.5us, 10000->12.6us, 30000->40us
+.\run-experiment.ps1 -SlowIterValues 0,1000,3000,10000,30000 -Trials 1000
+
+# Microsecond-mode sweep (coarser, scheduler-sensitive)
+.\run-experiment.ps1 -SlowUsValues 0,1,2,5,10,20,50,100 -Trials 1000
+
+# More trials for tighter confidence intervals
+.\run-experiment.ps1 -SlowIterValues 0,1000,3000,10000,30000 -Trials 3000
+```
+
+Results are written to `results/results.csv` and per-run logs to `results/raw/`.
+
+### Recommended workflow
+
+1. Run calibrate to map your hardware's iteration speed.
+2. Do a quick manual test at a large delay (e.g. `-slow-iter=30000`) to confirm the setup works end-to-end.
+3. Run a sweep starting from the largest delay and ratchet down toward your noise floor — the point where the signal disappears is your detection threshold.
 
 ## Automated Experiment Sweeps
 
@@ -71,7 +123,7 @@ Requires Go 1.22+ and the `golang.org/x/net` module (resolved automatically via 
 .\run-experiment.ps1
 
 # Custom iteration values, more trials
-.\run-experiment.ps1 -SlowIterValues 500,1000,2000,3000 -Trials 3000
+.\run-experiment.ps1 -SlowIterValues 0,1000,3000,10000,30000 -Trials 3000
 
 # Microsecond mode
 .\run-experiment.ps1 -SlowUsValues 0,1,2,5,10,20,50,100
@@ -109,7 +161,8 @@ Wilson 95% CI:       [0.619, 0.655]
 ## Project Structure
 
 ```
-timeless.go            # Main source: server, client, calibrate, analysis
+server.go              # Server, calibrate mode, TLS cert generation, flags, main
+client.go              # Client, H2 dial, statistical analysis
 run-experiment.ps1     # PowerShell sweep harness
 go.mod / go.sum        # Module definition (module: trial, Go 1.26.2)
 timeless.exe           # Pre-built Windows binary

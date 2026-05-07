@@ -19,6 +19,7 @@
 param(
     [int[]] $SlowUsValues   = @(0, 1, 2, 5, 10, 20, 50, 100),
     [int[]] $SlowIterValues = @(),  # if non-empty, use iteration mode instead of µs
+    [int[]] $NsValues       = @(),  # optional: ns_per_call for each point (from -mode=calibrate), shown in summary
     [int]   $Trials       = 1000,
     [int]   $Warmup       = 50,
     [int]   $StartPort    = 18400,
@@ -33,8 +34,8 @@ $ErrorActionPreference = "Stop"
 # Setup
 # --------------------------------------------------------------------------
 
-if (-not (Test-Path "timeless.go")) {
-    Write-Error "timeless.go not found in current directory."
+if (-not (Test-Path "go.mod")) {
+    Write-Error "go.mod not found - run this script from the project root."
     exit 1
 }
 
@@ -46,7 +47,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $OutDir "raw") | Out-Null
 # listeners on Windows. Building once gives us one PID per server.
 $binary = Join-Path (Get-Location) "timeless.exe"
 Write-Host "Building $binary ..." -ForegroundColor Cyan
-& go build -o $binary timeless.go
+& go build -o $binary .
 if ($LASTEXITCODE -ne 0) {
     Write-Error "go build failed."
     exit 1
@@ -207,6 +208,7 @@ function Run-OnePoint {
 
 $allResults = @()
 $port = $StartPort
+$sweepStart = Get-Date
 
 if ($SlowIterValues.Count -gt 0) {
     Write-Host "Running iter-mode sweep (fixed iteration counts, scheduler-free)" -ForegroundColor Cyan
@@ -231,11 +233,26 @@ if ($SlowIterValues.Count -gt 0) {
 Write-Host ""
 Write-Host "=== Summary ===" -ForegroundColor Cyan
 $colLabel = if ($SlowIterValues.Count -gt 0) { "iter" } else { "slow_us" }
-Write-Host ("{0,-10} {1,-10} {2,-12} {3,-12} {4,-12}" -f $colLabel, "overall%", "1st-pos%", "2nd-pos%", "p-value")
-Write-Host ("{0,-10} {1,-10} {2,-12} {3,-12} {4,-12}" -f "-------", "--------", "--------", "--------", "-------")
+$showNs = $NsValues.Count -gt 0
+if ($showNs) {
+    Write-Host ("{0,-10} {1,-10} {2,-10} {3,-12} {4,-12} {5,-12}" -f $colLabel, "delay", "overall%", "1st-pos%", "2nd-pos%", "p-value")
+    Write-Host ("{0,-10} {1,-10} {2,-10} {3,-12} {4,-12} {5,-12}" -f "-------", "-----", "--------", "--------", "--------", "-------")
+} else {
+    Write-Host ("{0,-10} {1,-10} {2,-12} {3,-12} {4,-12}" -f $colLabel, "overall%", "1st-pos%", "2nd-pos%", "p-value")
+    Write-Host ("{0,-10} {1,-10} {2,-12} {3,-12} {4,-12}" -f "-------", "--------", "--------", "--------", "-------")
+}
+$idx = 0
 foreach ($r in $allResults) {
-    Write-Host ("{0,-10} {1,-10} {2,-12} {3,-12} {4,-12}" -f
-        $r.slow_value, $r.fast_win_pct, $r.fast_first_pos_pct, $r.fast_second_pos_pct, $r.p_value)
+    if ($showNs -and $idx -lt $NsValues.Count) {
+        $ns = $NsValues[$idx]
+        $delayStr = if ($ns -ge 1000) { "$([math]::Round($ns/1000, 1))us" } else { "${ns}ns" }
+        Write-Host ("{0,-10} {1,-10} {2,-10} {3,-12} {4,-12} {5,-12}" -f
+            $r.slow_value, $delayStr, $r.fast_win_pct, $r.fast_first_pos_pct, $r.fast_second_pos_pct, $r.p_value)
+    } else {
+        Write-Host ("{0,-10} {1,-10} {2,-12} {3,-12} {4,-12}" -f
+            $r.slow_value, $r.fast_win_pct, $r.fast_first_pos_pct, $r.fast_second_pos_pct, $r.p_value)
+    }
+    $idx++
 }
 Write-Host ""
 Write-Host "CSV: $csvPath" -ForegroundColor Cyan
