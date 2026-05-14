@@ -5,7 +5,7 @@ A Go proof-of-concept of the HTTP/2 concurrency-based timing attack from:
 > **"Timeless Timing Attacks: Exploiting Concurrency to Leak Secrets over Remote Connections"**
 > Tom Van Goethem, Christina Pöpper, Wouter Joosen, Mathy Vanhoef, USENIX Security 2020
 
-For authorized security research and educational use only.
+For educational use only.
 
 ## The Paper
 
