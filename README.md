@@ -1,14 +1,35 @@
 # TimelessAttack
 
-A research harness for measuring HTTP/2 timeless timing attacks. The tool detects response-time asymmetries between two endpoints by coalescing paired HTTP/2 requests into a single TCP write, then recording which response arrives first across many trials. Statistical analysis (one-sided binomial test + Wilson score interval) determines whether the measured timing difference is significant.
+A Go proof-of-concept of the HTTP/2 concurrency-based timing attack from:
 
-## Background
+> **"Timeless Timing Attacks: Exploiting Concurrency to Leak Secrets over Remote Connections"**
+> Tom Van Goethem, Christina Pöpper, Wouter Joosen, Mathy Vanhoef, USENIX Security 2020
 
-Timeless timing attacks exploit the fact that when two requests share the same network packet, network jitter cancels out and the only remaining latency source is server-side processing time. This harness implements that technique over TLS + HTTP/2 on loopback or LAN, making it useful for controlled research into timing side-channels.
+For authorized security research and educational use only.
+
+## The Paper
+
+Classical remote timing attacks send requests sequentially and measure response times. Over the Internet, network jitter (1-30 ms standard deviation) makes this impractical for timing differences smaller than ~10 µs.
+
+The paper introduces **concurrency-based timing attacks**: instead of measuring absolute response times, the attacker sends two requests coalesced into a **single TCP packet** and observes the **order** in which responses come back. Because both requests travel the same network path inside the same packet, jitter hits them identically and cancels out. What remains is purely server-side processing time, giving accuracy comparable to running the measurement locally on the server itself. The paper reports **100x better precision** than classical Internet attacks, with differences as small as **100 ns** detectable over a remote connection.
+
+The technique was demonstrated against HTTP/2 web servers, Tor onion services, and EAP-pwd Wi-Fi authentication, including a dictionary attack with 86% success rate against a server-side target previously considered immune.
+
+## This Implementation
+
+A Go PoC of the **HTTP/2 direct attack** scenario. The server and client are split across two files (`server.go`, `client.go`) and built into a single binary. The client coalesces two HTTP/2 HEADERS frames into a single TCP write so both requests arrive at the server simultaneously, then records which response stream arrives first across thousands of trials. A one-sided binomial test determines whether the response order is biased enough to conclude a timing difference exists.
+
+## Build
+
+```bash
+go build -o timeless.exe .
+```
+
+Requires Go 1.26.2+ and `golang.org/x/net` (resolved automatically via `go.sum`).
 
 ## Usage
 
-Three modes are available: `server`, `client`, and `calibrate`.
+Three modes: `server`, `client`, and `calibrate`.
 
 ### Server
 
@@ -23,12 +44,10 @@ timeless.exe -mode=server [flags]
 | `-slow-iter` | `0` | Fixed CPU iterations on `/slow` (overrides `-slow-us`, scheduler-free) |
 
 The server exposes two endpoints:
-- `/fast` — returns immediately
-- `/slow` — burns CPU for the configured duration, then returns
+- `/fast`: returns immediately
+- `/slow`: burns CPU for the configured duration, then returns
 
 ### Client
-
-Requires a server to be running. Sends paired HEADERS frames coalesced into one TCP write per trial and records which stream's response header arrives first.
 
 ```
 timeless.exe -mode=client [flags]
@@ -46,129 +65,111 @@ timeless.exe -mode=client [flags]
 
 ### Calibrate
 
-Measures how many CPU iterations correspond to a given nanosecond budget on the current hardware. Use this to pick a `-slow-iter` value targeting a specific delay.
+```
+timeless.exe -mode=calibrate
+```
+
+Prints a table mapping `-slow-iter` values to nanoseconds on the current hardware. Use this to pick an iteration count that matches a target delay. Prefer `-slow-iter` over `-slow-us` as it makes no `time.Now()` calls and is unaffected by OS timer granularity.
+
+### Automated Sweeps
+
+`run-experiment.ps1` builds the binary, starts a fresh server per data point, runs the client, parses output, and writes results to `results/results.csv`. Raw client stdout is saved under `results/raw/`.
+
+```powershell
+# Iteration-mode sweep (recommended)
+.\run-experiment.ps1 -SlowIterValues @(0,1000,3000,10000,30000) -Trials 5000
+
+# Microsecond-mode sweep
+.\run-experiment.ps1 -SlowUsValues @(0,1,2,5,10,20,50,100) -Trials 5000
+```
+
+CSV columns: `mode, slow_value, trials, fast_wins, fast_win_pct, fast_first_pos_pct, fast_second_pos_pct, p_value, wilson_lo, wilson_hi, duration_sec`
+
+## Statistical Methods
+
+**Binomial test.** Each trial is a binary outcome: did `/fast` respond first? Under the null hypothesis (no timing difference), this is a fair coin flip with p=0.5. The one-sided p-value P(X >= k) under X ~ Binomial(n, 0.5) is computed in log-space to avoid underflow at large n (`oneSidedBinomialPValue` in `client.go`).
+
+**Wilson score interval.** A 95% confidence interval on the true win probability, preferred over the normal approximation because it stays accurate near p=0 and p=1 (`wilsonCI` in `client.go`).
+
+**Position-conditional rates.** The client tracks win rates separately for trials where `/fast` held the lower stream ID (sent first in the TCP segment) and where it held the higher ID (sent second). A large gap between these two rates means ordering bias is contaminating the signal. `-interleave` is designed to cancel this at the aggregate level.
+
+## Trial Run
+
+Recorded on Windows 11, loopback, Intel hardware, 5000 trials per data point.
+
+### Step 1: Calibration
 
 ```
 timeless.exe -mode=calibrate
 ```
 
-Prints a table mapping iteration counts to nanoseconds per call and estimates the OS timer resolution.
-
-## Build
-
-```bash
-go build -o timeless.exe .
+```
+timer resolution on this machine: ~677600ns
+iters      ns_per_call    p10_ns         p90_ns         batch_size
+10         2              1              3              1000000
+30         12             11             13             1000000
+100        50             49             50             1000000
+300        209            209            211            1000000
+1000       743            741            753            1000000
+3000       2280           2161           2406           5016
+10000      7637           7383           7831           5029
+30000      22868          22487          23319          2340
+100000     76329          75270          77403          690
 ```
 
-Requires Go 1.22+ and the `golang.org/x/net` module (resolved automatically via `go.sum`).
+Iteration counts selected for the sweep and their approximate delays on this hardware:
 
-## Running an Experiment
+| `-slow-iter` | approx. delay |
+|-------------|--------------|
+| 0 | 0 (null baseline) |
+| 100 | 50 ns |
+| 300 | 210 ns |
+| 500 | 360 ns |
+| 700 | 510 ns |
+| 1000 | 750 ns |
+| 3000 | 2.3 µs |
+| 30000 | 23 µs |
 
-### Step 1 — Calibrate (pick a `-slow-iter` value)
-
-Run calibrate on the machine that will act as the server to find how many iterations map to your target delay:
+### Step 2: Sweep
 
 ```powershell
-.\timeless.exe -mode=calibrate
+.\run-experiment.ps1 -SlowIterValues @(0,100,300,500,700,1000,3000,30000) -Trials 5000
 ```
 
-Look at the `ns_per_call` column and pick an iteration count that matches your target burn time (e.g. 500 ns, 2 µs, 10 µs). Prefer `-slow-iter` over `-slow-us` — it doesn't call `time.Now()` so it is not affected by OS timer granularity.
+| iters | delay | overall win% | sent-1st win% | sent-2nd win% | p-value |
+|-------|-------|-------------|--------------|--------------|---------|
+| 0 | 0 ns | 50.32% | 97.68% | 2.96% | 0.331 |
+| 100 | 50 ns | 50.38% | 97.68% | 3.08% | 0.300 |
+| 300 | 210 ns | 50.62% | 98.24% | 3.00% | 0.194 |
+| 500 | 360 ns | 51.26% | 98.36% | 4.16% | 0.039 |
+| 700 | 510 ns | 51.20% | 97.96% | 4.44% | 0.046 |
+| 1000 | 750 ns | 52.70% | 97.88% | 7.52% | 7.09e-05 |
+| 3000 | 2.3 µs | 61.14% | 99.12% | 23.16% | 1.41e-56 |
+| 30000 | 23 µs | 99.64% | 99.96% | 99.32% | ~0 |
 
-### Step 2 — Quick manual test
+<img src="results/detection_chart.png" width="680"/>
 
-In one terminal, start the server:
+### What the numbers show
 
-```powershell
-.\timeless.exe -mode=server -slow-iter=1000
-```
+**The ordering bias.** The sent-1st column is 97-99% across every row including the null. When two HEADERS frames arrive in the same TLS record the server decrypts them sequentially, so the first request gets a constant head start roughly equal to one TLS decryption. The `-interleave` flag cancels this by swapping which path gets the lower stream ID on alternating trials, which is why the overall rate sits at ~50% at 0 iters despite the 97%/3% positional split.
 
-In a second terminal, run the client:
+**Where the signal starts.** The sent-2nd column is the clean indicator: it measures how often `/fast` wins despite being sent second, which requires overcoming the TLS head start on processing time alone. At 0-300 iters it sits at 2.96-3.08%, consistent with noise. At 500-700 iters it lifts to 4.16-4.44% with p values just crossing 0.05 — borderline. The unambiguous threshold on this hardware at 5000 trials is around 750 ns, where sent-2nd jumps to 7.52% and p drops to 7e-05.
 
-```powershell
-.\timeless.exe -mode=client -trials=1000 -progress=100
-```
-
-Check the output: if `/fast` wins significantly more than 50 % of trials and the p-value is well below 0.05, the timing asymmetry is detectable.
-
-### Step 3 — Automated sweep
-
-Use `run-experiment.ps1` to sweep across multiple delay values in one shot. It starts a fresh server per data point, saves raw output, and writes a summary CSV.
-
-```powershell
-# Iteration-mode sweep (recommended — scheduler-free)
-# Values chosen from calibration: 1000->835ns, 3000->2.5us, 10000->12.6us, 30000->40us
-.\run-experiment.ps1 -SlowIterValues 0,1000,3000,10000,30000 -Trials 1000
-
-# Microsecond-mode sweep (coarser, scheduler-sensitive)
-.\run-experiment.ps1 -SlowUsValues 0,1,2,5,10,20,50,100 -Trials 1000
-
-# More trials for tighter confidence intervals
-.\run-experiment.ps1 -SlowIterValues 0,1000,3000,10000,30000 -Trials 3000
-```
-
-Results are written to `results/results.csv` and per-run logs to `results/raw/`.
-
-### Recommended workflow
-
-1. Run calibrate to map your hardware's iteration speed.
-2. Do a quick manual test at a large delay (e.g. `-slow-iter=30000`) to confirm the setup works end-to-end.
-3. Run a sweep starting from the largest delay and ratchet down toward your noise floor — the point where the signal disappears is your detection threshold.
-
-## Automated Experiment Sweeps
-
-`run-experiment.ps1` orchestrates multi-point sweeps. It starts a fresh server instance per data point, runs the client, parses output, and appends a row to `results/results.csv`. Raw client stdout is saved under `results/raw/`.
-
-```powershell
-# Default sweep over a built-in iteration range, 1000 trials each
-.\run-experiment.ps1
-
-# Custom iteration values, more trials
-.\run-experiment.ps1 -SlowIterValues 0,1000,3000,10000,30000 -Trials 3000
-
-# Microsecond mode
-.\run-experiment.ps1 -SlowUsValues 0,1,2,5,10,20,50,100
-```
-
-Results CSV columns:
-
-```
-mode, slow_value, trials, fast_wins, fast_win_pct,
-fast_first_pos_pct, fast_second_pos_pct,
-p_value, wilson_lo, wilson_hi, duration_sec
-```
-
-## Output Interpretation
-
-```
-trials:              3000
-fast arrived first:  1911 (63.70%)
-  when fast sent 1st: 1861/1500 (…)
-  when fast sent 2nd: 50/1500  (…)
-one-sided p-value:   1.02e-51
-Wilson 95% CI:       [0.619, 0.655]
-```
-
-- **fast arrived first** — fraction of trials where `/fast`'s response header beat `/slow`'s. Should be ~50% under the null (no timing difference).
-- **position-conditional rates** — win rate split by which path held the lower stream ID. A large spread here indicates ordering bias; `-interleave` is designed to cancel it.
-- **p-value** — one-sided binomial test against H0: p = 0.5. Values well below 0.05 indicate a detectable timing difference.
-- **Wilson 95% CI** — confidence interval on the true win probability.
-
-## Statistical Methods
-
-- **Binomial test** — implemented in log-space to handle large trial counts without underflow (`oneSidedBinomialPValue`).
-- **Wilson score interval** — preferred over the normal approximation for small or extreme probabilities (`wilsonCI`).
+**Comparison to the paper.** The paper reports that 100 ns requires ~39,000 pairs for 95% accuracy over an Internet connection. At 5000 trials we correctly cannot detect 50-210 ns. The paper puts 500 ns detection at ~1,600 pairs over the Internet and fewer on loopback, consistent with our 360-510 ns results sitting right at the borderline with 5000 trials. At 2.3 µs the attack is essentially certain.
 
 ## Project Structure
 
 ```
-server.go              # Server, calibrate mode, TLS cert generation, flags, main
-client.go              # Client, H2 dial, statistical analysis
+server.go              # Server mode, calibrate mode, TLS cert generation, flags, main
+client.go              # Client mode, H2 dial, statistical analysis
 run-experiment.ps1     # PowerShell sweep harness
-go.mod / go.sum        # Module definition (module: trial, Go 1.26.2)
+gen_chart.py           # Generates results/detection_chart.png from sweep data
+go.mod / go.sum        # Module definition (Go 1.26.2)
 timeless.exe           # Pre-built Windows binary
 results/
   results.csv          # Aggregated sweep output
-  raw/                 # Per-data-point raw client stdout and server logs
+  raw/                 # Per-data-point client stdout and server logs
+  detection_chart.png  # Chart generated from the last sweep
 ```
 
 ## Dependencies
@@ -180,6 +181,6 @@ results/
 
 ## Limitations and Notes
 
-- The self-signed TLS certificate is generated in-memory at server startup; the client skips verification (`InsecureSkipVerify`).
-- Time-based burn (`-slow-us`) is sensitive to OS scheduler preemption and timer resolution. On Windows, timer granularity is typically 100 ns – 1 µs; prefer `-slow-iter` for reproducible experiments.
-- Results are most reliable over loopback (127.0.0.1), where network jitter is minimal and coalescing is guaranteed.
+- The self-signed TLS certificate is generated in memory at server startup. The client skips verification (`InsecureSkipVerify`). Do not use outside a controlled lab environment.
+- `-slow-us` calls `time.Now()` in a tight loop and is sensitive to OS scheduler preemption. On Windows timer granularity is typically in the hundreds of microseconds range. Use `-slow-iter` for anything below ~5 µs.
+- Results are most reliable on loopback (127.0.0.1) where coalescing into a single TCP segment is guaranteed. On a real LAN the attack still works but requires verifying that both frames land in one packet.

@@ -188,7 +188,11 @@ func runCalibrate() {
 
 	// First, measure timer granularity on this machine so we can report it.
 	timerRes := measureTimerResolution()
-	fmt.Printf("timer resolution on this machine: ~%dns (from 1000 successive time.Now() calls)\n", timerRes.Nanoseconds())
+	if timerRes == 0 {
+		fmt.Println("timer resolution on this machine: >200ms (could not observe a tick)")
+	} else {
+		fmt.Printf("timer resolution on this machine: ~%dns\n", timerRes.Nanoseconds())
+	}
 	fmt.Println("calibrating burnIter ...")
 	fmt.Printf("%-10s %-14s %-14s %-14s %-10s\n", "iters", "ns_per_call", "p10_ns", "p90_ns", "batch_size")
 
@@ -246,21 +250,19 @@ func runCalibrate() {
 	fmt.Println("  target 10µs   → pick iters where ns_per_call ≈ 10000")
 }
 
-// measureTimerResolution estimates the OS timer granularity by sampling
-// time.Now() in a tight loop and finding the smallest non-zero gap
+// measureTimerResolution estimates the OS timer granularity by spinning until
+// time.Now() advances, then returning that first observed step. Bounded to
+// 200ms so it doesn't hang on pathological systems.
 func measureTimerResolution() time.Duration {
-	const samples = 10000
-	min := time.Hour
+	deadline := time.Now().Add(200 * time.Millisecond)
 	prev := time.Now()
-	for i := 0; i < samples; i++ {
+	for time.Now().Before(deadline) {
 		now := time.Now()
-		d := now.Sub(prev)
-		if d > 0 && d < min {
-			min = d
+		if d := now.Sub(prev); d > 0 {
+			return d
 		}
-		prev = now
 	}
-	return min
+	return 0
 }
 
 // ---------------------------------------------------------------------------
