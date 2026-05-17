@@ -95,7 +95,7 @@ CSV columns: `mode, slow_value, trials, fast_wins, fast_win_pct, fast_first_pos_
 
 ## Trial Run
 
-Recorded on Windows 11, loopback, Intel hardware, 5000 trials per data point.
+Recorded on Windows 11, i5-14600k, loopback, 5000 trials per data point.
 
 ### Step 1: Calibration
 
