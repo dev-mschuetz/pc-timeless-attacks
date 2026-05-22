@@ -1,4 +1,5 @@
 .idea/
+*.exe
 
 # Default ignored files
 /shelf/
