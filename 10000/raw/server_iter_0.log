@@ -1,2 +1,0 @@
-2026/04/21 10:06:49 server listening on https://127.0.0.1:19000 (slow=0µs)
-2026/04/21 10:06:50 serve: listen tcp 127.0.0.1:19000: bind: Normalerweise darf jede Socketadresse (Protokoll, Netzwerkadresse oder Anschluss) nur jeweils einmal verwendet werden.

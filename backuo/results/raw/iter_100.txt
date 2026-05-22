@@ -1,9 +1,0 @@
-﻿---
-trials:              2000
-fast arrived first:  1004 (50.20%)
-  when fast sent 1st: 883/1000 (88.30%)
-  when fast sent 2nd: 121/1000 (12.10%)
-one-sided p-value:   0.438  (H0: no timing difference)
-Wilson 95% CI:       [0.480, 0.524]
-WARNING: position-conditional rates differ by 0.76 ÔÇö ordering bias likely dominates. Interpret with caution.
-
