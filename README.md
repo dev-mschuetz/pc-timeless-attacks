@@ -1,6 +1,6 @@
 # TimelessAttack
 
-This project is a proof-of-concept written in Go of the HTTP/2 concurrency-based timing attack from:
+This project is a Go proof-of-concept of the HTTP/2 concurrency-based timing attack from:
 
 > **"Timeless Timing Attacks: Exploiting Concurrency to Leak Secrets over Remote Connections"**
 > Tom Van Goethem, Christina Pöpper, Wouter Joosen, Mathy Vanhoef, USENIX Security 2020
@@ -25,7 +25,7 @@ This implementation focuses on the **HTTP/2 direct attack** scenario. The server
 go build -o timeless.exe .
 ```
 
-Requires Go 1.26.2+ and `golang.org/x/net` (resolved automatically via `go.sum`).
+Requires Go 1.26.2+ and `golang.org/x/net` (resolved automatically via `go.mod`).
 
 ## Usage
 
@@ -151,11 +151,11 @@ Iteration counts selected for the sweep and their approximate delays on this har
 
 ### What the numbers show
 
-**The ordering bias.** The sent-1st column is 97-99% across every row including the null. When two HEADERS frames arrive in the same TLS record the server decrypts them sequentially, so the first request gets a constant head start roughly equal to one TLS decryption. The `-interleave` flag cancels this by swapping which path gets the lower stream ID on alternating trials, which is why the overall rate sits at ~50% at 0 iters despite the 97%/3% positional split.
+**The ordering bias.** The sent-1st column is 97-99% across every row including the null. When two HEADERS frames arrive in the same TLS record, the server decrypts them sequentially, so the first request gets a constant head start roughly equal to one TLS decryption. The `-interleave` flag cancels this by swapping which path gets the lower stream ID on alternating trials, which is why the overall rate sits at ~50% at 0 iters despite the 97%/3% positional split.
 
 **Where the signal starts.** The sent-2nd column is the clean indicator: it measures how often `/fast` wins despite being sent second, which requires overcoming the TLS head start on processing time alone. At 0-300 iters it sits at 2.96-3.08%, consistent with noise. At 500-700 iters it lifts to 4.16-4.44% with p values just crossing 0.05, which is borderline. The unambiguous threshold on this hardware at 5000 trials is around 750 ns, where sent-2nd jumps to 7.52% and p drops to 7e-05.
 
-**Comparison to the paper.** The paper reports that 100 ns requires ~39,000 pairs for 95% accuracy over an Internet connection. At 5000 trials we correctly cannot detect 50-210 ns. The paper puts 500 ns detection at ~1,600 pairs over the Internet and fewer on loopback, consistent with our 360-510 ns results sitting right at the borderline with 5000 trials. At 2.3 µs the attack is essentially certain.
+**Comparison to the paper.** The paper reports that 100 ns requires ~39,000 pairs for 95% accuracy over an Internet connection. At 5000 trials we correctly fail to detect 50-210 ns. The paper puts 500 ns detection at ~1,600 pairs over the Internet and fewer on loopback, consistent with our 360-510 ns results sitting right at the borderline with 5000 trials. At 2.3 µs the attack is essentially certain.
 
 ## Project Structure
 
@@ -195,7 +195,7 @@ Go's standard HTTP client manages its own connection pool and write scheduling i
 
 ### `burnIter` over `burnCPU` for the server-side delay
 
-`burnCPU` uses `time.Now()` in a tight loop to check whether the target duration has elapsed. On Windows, `time.Now()` has ~100µs–1ms granularity and its own call overhead, which makes sub-microsecond targets meaningless and adds noise. `burnIter` does a fixed number of mixing loop iterations with no timer calls at all, so the delay is determined by CPU speed rather than OS timer resolution. The LCG constants are from the PCG family and produce non-trivial work that the compiler cannot eliminate. A `sink` variable captures the result to prevent dead-code optimization.
+`burnCPU` uses `time.Now()` in a tight loop to check whether the target duration has elapsed. On Windows, `time.Now()` has ~100µs–1ms granularity and its own call overhead, which makes sub-microsecond targets meaningless and adds noise. `burnIter` does a fixed number of mixing loop iterations with no timer calls at all, so the delay is determined by CPU speed rather than OS timer resolution. The loop uses a chain of multiply-and-add steps (borrowed from the PCG random-number family) where each step depends on the previous result, so the compiler cannot skip or remove them. The final value is stored in a `sink` variable to ensure the compiler treats the whole computation as used and does not delete it.
 
 ### One connection for all trials
 
@@ -203,7 +203,7 @@ A fresh TLS handshake per trial would add milliseconds of latency and complicate
 
 ### Alternating stream order
 
-The server processes streams in the order it receives them, so whichever request appears first in the TCP segment gets a small head start regardless of processing time. Rather than trying to eliminate this bias (which would require controlling server internals) we cancel it statistically by flipping which endpoint gets the lower stream ID on alternating trials. The bias appears symmetrically across both halves and drops out of the aggregate win rate.
+The server processes streams in the order it receives them, so whichever request appears first in the TCP segment gets a small head start regardless of processing time. Rather than trying to eliminate this bias (which would require controlling server internals), we cancel it statistically by flipping which endpoint gets the lower stream ID on alternating trials. The bias appears symmetrically across both halves and drops out of the aggregate win rate.
 
 ## Limitations and Notes
 
