@@ -1,6 +1,6 @@
 # TimelessAttack
 
-A Go proof-of-concept of the HTTP/2 concurrency-based timing attack from:
+This project is a proof-of-concept written in Go of the HTTP/2 concurrency-based timing attack from:
 
 > **"Timeless Timing Attacks: Exploiting Concurrency to Leak Secrets over Remote Connections"**
 > Tom Van Goethem, Christina Pöpper, Wouter Joosen, Mathy Vanhoef, USENIX Security 2020
@@ -17,7 +17,7 @@ The technique was demonstrated against HTTP/2 web servers, Tor onion services, a
 
 ## This Implementation
 
-A Go PoC of the **HTTP/2 direct attack** scenario. The server and client are split across two files (`server.go`, `client.go`) and built into a single binary. The client coalesces two HTTP/2 HEADERS frames into a single TCP write so both requests arrive at the server simultaneously, then records which response stream arrives first across thousands of trials. A one-sided binomial test determines whether the response order is biased enough to conclude a timing difference exists.
+This implementation focuses on the **HTTP/2 direct attack** scenario. The server and client are split across two files (`server.go`, `client.go`) and built into a single binary. The client coalesces two HTTP/2 HEADERS frames into a single TCP write so both requests arrive at the server simultaneously, then records which response stream arrives first across thousands of trials. A one-sided binomial test determines whether the response order is biased enough to conclude a timing difference exists.
 
 ## Build
 
@@ -95,7 +95,7 @@ CSV columns: `mode, slow_value, trials, fast_wins, fast_win_pct, fast_first_pos_
 
 ## Trial Run
 
-Recorded on Windows 11, i5-14600k, loopback, 5000 trials per data point.
+Recorded on Windows 11, i5-14600k, loopback, with 5000 trials per data point.
 
 ### Step 1: Calibration
 
@@ -153,7 +153,7 @@ Iteration counts selected for the sweep and their approximate delays on this har
 
 **The ordering bias.** The sent-1st column is 97-99% across every row including the null. When two HEADERS frames arrive in the same TLS record the server decrypts them sequentially, so the first request gets a constant head start roughly equal to one TLS decryption. The `-interleave` flag cancels this by swapping which path gets the lower stream ID on alternating trials, which is why the overall rate sits at ~50% at 0 iters despite the 97%/3% positional split.
 
-**Where the signal starts.** The sent-2nd column is the clean indicator: it measures how often `/fast` wins despite being sent second, which requires overcoming the TLS head start on processing time alone. At 0-300 iters it sits at 2.96-3.08%, consistent with noise. At 500-700 iters it lifts to 4.16-4.44% with p values just crossing 0.05 — borderline. The unambiguous threshold on this hardware at 5000 trials is around 750 ns, where sent-2nd jumps to 7.52% and p drops to 7e-05.
+**Where the signal starts.** The sent-2nd column is the clean indicator: it measures how often `/fast` wins despite being sent second, which requires overcoming the TLS head start on processing time alone. At 0-300 iters it sits at 2.96-3.08%, consistent with noise. At 500-700 iters it lifts to 4.16-4.44% with p values just crossing 0.05, which is borderline. The unambiguous threshold on this hardware at 5000 trials is around 750 ns, where sent-2nd jumps to 7.52% and p drops to 7e-05.
 
 **Comparison to the paper.** The paper reports that 100 ns requires ~39,000 pairs for 95% accuracy over an Internet connection. At 5000 trials we correctly cannot detect 50-210 ns. The paper puts 500 ns detection at ~1,600 pairs over the Internet and fewer on loopback, consistent with our 360-510 ns results sitting right at the borderline with 5000 trials. At 2.3 µs the attack is essentially certain.
 
@@ -179,8 +179,35 @@ results/
 | `golang.org/x/net` | v0.53.0 | HTTP/2 framing and HPACK |
 | `golang.org/x/text` | v0.36.0 | Transitive dependency |
 
+## Design Choices
+
+### Why Go
+
+The authors of the paper released a Python reference implementation at https://github.com/DistriNet/timeless-timing-attacks. We chose not to use it because the goal was to reproduce the attack from scratch and understand every layer. Go was a natural fit because `golang.org/x/net/http2` exposes a raw `Framer` API that lets you write individual HEADERS frames and decide exactly when they get flushed to the kernel. Most HTTP/2 libraries in other languages hide this behind a higher-level client abstraction, making it difficult or impossible to guarantee that two requests go out in the same syscall. Go also made it straightforward to ship both sides as a single binary without any runtime dependencies.
+
+### One binary for both sides
+
+The server and client are the same program, selected by `-mode`. The main practical reason is that it eliminates version skew. It also makes the experiment easy to hand to someone else: one file and one command.
+
+### Raw framer instead of `http.Client`
+
+Go's standard HTTP client manages its own connection pool and write scheduling internally. Using `http2.Framer` directly means we control exactly when bytes reach the kernel, which is the whole point. We needed the two HEADERS frames to arrive as a single write, not whenever the client's internal scheduler decided to flush.
+
+### `burnIter` over `burnCPU` for the server-side delay
+
+`burnCPU` uses `time.Now()` in a tight loop to check whether the target duration has elapsed. On Windows, `time.Now()` has ~100µs–1ms granularity and its own call overhead, which makes sub-microsecond targets meaningless and adds noise. `burnIter` does a fixed number of mixing loop iterations with no timer calls at all, so the delay is determined by CPU speed rather than OS timer resolution. The LCG constants are from the PCG family and produce non-trivial work that the compiler cannot eliminate. A `sink` variable captures the result to prevent dead-code optimization.
+
+### One connection for all trials
+
+A fresh TLS handshake per trial would add milliseconds of latency and complicate bookkeeping since stream IDs reset on each connection. Reusing one connection keeps trials fast and ensures all measurements are made under identical conditions.
+
+### Alternating stream order
+
+The server processes streams in the order it receives them, so whichever request appears first in the TCP segment gets a small head start regardless of processing time. Rather than trying to eliminate this bias (which would require controlling server internals) we cancel it statistically by flipping which endpoint gets the lower stream ID on alternating trials. The bias appears symmetrically across both halves and drops out of the aggregate win rate.
+
 ## Limitations and Notes
 
 - The self-signed TLS certificate is generated in memory at server startup. The client skips verification (`InsecureSkipVerify`). Do not use outside a controlled lab environment.
 - `-slow-us` calls `time.Now()` in a tight loop and is sensitive to OS scheduler preemption. On Windows timer granularity is typically in the hundreds of microseconds range. Use `-slow-iter` for anything below ~5 µs.
 - Results are most reliable on loopback (127.0.0.1) where coalescing into a single TCP segment is guaranteed. On a real LAN the attack still works but requires verifying that both frames land in one packet.
+- The client reuses a single connection for all trials. On very large runs (50k+) the connection can drop mid-run due to server-side GC or scheduler delays, causing a fatal timeout. Split large runs into smaller batches if needed.
