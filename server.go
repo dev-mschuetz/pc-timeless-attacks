@@ -1,32 +1,3 @@
-// Timeless Timing Attack — H2 Lab Harness
-//
-// A self-contained Go program that runs BOTH sides of a timeless-timing
-// experiment against an HTTP/2 server you control. Intended for authorized
-// testing on your own infrastructure only.
-//
-// Usage:
-//   go run server.go client.go -mode=server
-//   go run server.go client.go -mode=client -trials=1000
-//
-// What it does:
-//   - Server: TLS+H2 with /fast and /slow endpoints. /slow burns a
-//     configurable number of microseconds of CPU to create a known
-//     ground-truth asymmetry.
-//   - Client: Opens one H2 connection, sends paired HEADERS frames for
-//     /fast and /slow coalesced into a single Write() (and usually a single
-//     TCP segment on loopback/LAN). Reads response HEADERS frames back and
-//     records which stream ID arrived first.
-//   - Analysis: One-sided binomial test on the arrival-order distribution.
-//     Under H0 (no timing difference), P(fast first) = 0.5. If /slow
-//     genuinely takes longer, /fast should win more often.
-//
-// Dependencies:
-//   go get golang.org/x/net/http2
-//   go get golang.org/x/net/http2/hpack
-//
-// Start with -slow-us=50 on loopback. Once you see a clean signal, ratchet
-// it down toward your stack's noise floor.
-
 package main
 
 import (
@@ -121,8 +92,7 @@ func runServer() {
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{tlsCert}, NextProtos: []string{"h2"}},
 		ErrorLog:  log.New(os.Stderr, "h2-server: ", log.LstdFlags),
 	}
-	// Force H2 only; rejects HTTP/1.1 clients so we don't accidentally measure
-	// the wrong protocol.
+	// Force H2 only; rejects HTTP/1.1 clients so we don't accidentally measure the wrong protocol.
 	h2s := &http2.Server{}
 	if err := http2.ConfigureServer(srv, h2s); err != nil {
 		log.Fatalf("configure h2: %v", err)
@@ -138,13 +108,7 @@ func runServer() {
 	}
 }
 
-// burnCPU spins for approximately d, doing non-optimizable work so the
-// compiler doesn't elide it. This models a handler that takes longer
-// because of some secret-dependent computation.
-//
-// LIMITATIONS: Uses time.Now() which has ~100ns-1µs resolution on Windows
-// and significant per-call overhead. Not suitable for sub-microsecond burn
-// targets. For fine-grained work, use burnIter instead.
+// burnCPU spins for approximately d. time.Now() has coarse granularity on Windows (~100ns–1µs); use burnIter for sub-microsecond targets
 func burnCPU(d time.Duration) {
 	deadline := time.Now().Add(d)
 	var x uint64 = 1
@@ -156,10 +120,8 @@ func burnCPU(d time.Duration) {
 	sink = x
 }
 
-// burnIter does exactly n iterations of the mixing loop. No time.Now()
-// calls, no scheduler interaction (as long as n is small enough that we
-// don't get preempted). Calibrate with -mode=calibrate to map iterations
-// to wall-clock nanoseconds on your hardware.
+// burnIter runs exactly n iterations of the mixing loop with no timer calls.
+// Use -mode=calibrate to map iteration counts to nanoseconds on this hardware.
 func burnIter(n int) {
 	var x uint64 = 1
 	for i := 0; i < n; i++ {
@@ -174,11 +136,8 @@ var sink uint64
 // Calibrate (maps -slow-iter values to wall-clock nanoseconds)
 // ---------------------------------------------------------------------------
 
-// runCalibrate times burnIter at a range of iteration counts so you can
-// pick a sensible -slow-iter value for a target nanosecond budget. It
-// times BATCHES of calls to get enough elapsed time that timer resolution
-// isn't the limiting factor — Windows' time.Now() can have ~1ms
-// granularity, which would round small single-call measurements to zero.
+// runCalibrate times burnIter at a range of iteration counts so you can pick a -slow-iter value for a target nanosecond budget. 
+// Batches calls to stay above OS timer granularity on Windows.
 func runCalibrate() {
 	iterCounts := []int{10, 30, 100, 300, 1000, 3000, 10000, 30000, 100000}
 	// Target ~50ms of measured time per batch so we get many timer ticks
@@ -202,8 +161,7 @@ func runCalibrate() {
 			burnIter(n)
 		}
 
-		// Probe batch size: do a rough timing pass to pick how many calls
-		// per batch gets us to ~targetBatchDuration.
+		// Probe batch size: do a rough timing pass to pick how many calls per batch gets us to ~targetBatchDuration.
 		probeStart := time.Now()
 		const probeCalls = 100
 		for i := 0; i < probeCalls; i++ {
@@ -212,7 +170,7 @@ func runCalibrate() {
 		probeElapsed := time.Since(probeStart)
 		var batchSize int
 		if probeElapsed < time.Microsecond {
-			// Very fast — use a large batch
+			// Very fast, use a large batch
 			batchSize = 1_000_000
 		} else {
 			batchSize = int(float64(probeCalls) * float64(targetBatchDuration) / float64(probeElapsed))
@@ -224,7 +182,7 @@ func runCalibrate() {
 			}
 		}
 
-		// Now real measurements
+		// Real measurements
 		samples := make([]time.Duration, numBatches)
 		for b := 0; b < numBatches; b++ {
 			t0 := time.Now()
@@ -250,9 +208,8 @@ func runCalibrate() {
 	fmt.Println("  target 10µs   → pick iters where ns_per_call ≈ 10000")
 }
 
-// measureTimerResolution estimates the OS timer granularity by spinning until
-// time.Now() advances, then returning that first observed step. Bounded to
-// 200ms so it doesn't hang on pathological systems.
+// measureTimerResolution estimates the OS timer granularity by spinning until time.Now() advances, then returning that first observed step. 
+// Bounded to 200ms so it doesn't hang on pathological systems.
 func measureTimerResolution() time.Duration {
 	deadline := time.Now().Add(200 * time.Millisecond)
 	prev := time.Now()

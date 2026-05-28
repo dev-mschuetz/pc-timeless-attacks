@@ -3,14 +3,12 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"crypto/tls"
 	"fmt"
 	"log"
 	"math"
 	"net"
 	"os"
-	"sort"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -36,11 +34,7 @@ func runClient() {
 	}
 	defer conn.Close()
 
-	// Shared HPACK encoder. Using one encoder across trials means the second
-	// probe in each pair gets smaller headers (indexed), which is fine —
-	// what matters is that /fast and /slow have symmetric header sizes,
-	// which they do (same method, same authority, same scheme, paths differ
-	// only in the last four bytes).
+	// Shared HPACK encoder. /fast and /slow have symmetric header sizes (same method, authority, scheme; paths differ only in last 4 bytes).
 	var hbuf bytes.Buffer
 	henc := hpack.NewEncoder(&hbuf)
 
@@ -62,11 +56,8 @@ func runClient() {
 	nextStreamID := uint32(1) // client streams are odd
 
 	for i := 0; i < total; i++ {
-		// Alternate which path gets the lower stream ID, to cancel any
-		// fixed bias the server might have toward processing the lower
-		// stream ID first. We ALWAYS send the lower stream ID first on
-		// the wire — H2 requires strictly-increasing client stream IDs,
-		// and reordering them is a PROTOCOL_ERROR.
+		// Alternate which path gets the lower stream ID to cancel fixed server ordering bias. 
+		// Lower ID is always sent first on the wire (H2 requires strictly-increasing stream IDs).
 		firstID := nextStreamID
 		secondID := nextStreamID + 2
 		nextStreamID += 4
@@ -83,14 +74,12 @@ func runClient() {
 			firstPath, secondPath = "/fast", "/slow"
 		}
 
-		// Encode both header blocks up front so both WriteHeaders calls are
-		// back-to-back with no computation between them.
+		// Encode both header blocks up front so both WriteHeaders calls are back-to-back with no computation between them.
 		firstBlock := encodeHeaders(firstPath)
 		secondBlock := encodeHeaders(secondPath)
 
 		// Write both HEADERS frames into the bufio.Writer, then one Flush.
-		// The Flush issues a single Write() to the kernel, which on
-		// loopback/LAN lands in a single TCP segment.
+		// The Flush issues a single Write() to the kernel, which on loopback/LAN lands in a single TCP segment.
 		if err := framer.WriteHeaders(http2.HeadersFrameParam{
 			StreamID:      firstID,
 			BlockFragment: firstBlock,
@@ -111,14 +100,11 @@ func runClient() {
 			log.Fatalf("flush: %v", err)
 		}
 
-		// Per-trial deadline. If something goes wrong on one trial we want
-		// to abort that trial and see progress, not hang forever.
+		// Per-trial deadline. 
+		// If something goes wrong on one trial we want to abort that trial.
 		conn.SetReadDeadline(time.Now().Add(*timeout))
 
-		// Read frames until both streams have reached END_STREAM. HEADERS
-		// and DATA frames for the two streams can interleave arbitrarily
-		// on the wire, so we track both streams' progress in parallel
-		// rather than trying to drain them sequentially.
+		// Read frames until both streams end. HEADERS and DATA can interleave, so track both streams in parallel.
 		res := trialResult{fastStreamID: fastID, slowStreamID: slowID}
 		headersSeen := map[uint32]bool{fastID: false, slowID: false}
 		streamEnded := map[uint32]bool{fastID: false, slowID: false}
@@ -147,8 +133,7 @@ func runClient() {
 			if sid != fastID && sid != slowID {
 				continue
 			}
-			// Record the first HEADERS frame we see across both streams —
-			// that's our "which response arrived first" signal.
+			// Record the first HEADERS frame we see across both streams, that's our "which response arrived first" signal.
 			if isHeaders && !headersSeen[sid] {
 				headersSeen[sid] = true
 				if res.firstStreamID == 0 {
@@ -180,11 +165,7 @@ func runClient() {
 	analyze(results)
 }
 
-// dialH2 opens a TLS connection, completes the H2 preface + initial SETTINGS
-// exchange, and returns the net.Conn, a buffered writer wrapping the conn,
-// and a Framer whose writes go through that buffer. Buffering lets us write
-// two HEADERS frames and flush them to the kernel in a single syscall, which
-// almost always results in a single TCP segment on loopback/LAN.
+// dialH2 opens a TLS/H2 connection, completes the SETTINGS handshake, and returns a buffered framer so two HEADERS frames flush in one syscall.
 func dialH2(addr string) (net.Conn, *bufio.Writer, *http2.Framer, error) {
 	raw, err := tls.Dial("tcp", addr, &tls.Config{
 		InsecureSkipVerify: true, // self-signed lab cert
@@ -204,8 +185,7 @@ func dialH2(addr string) (net.Conn, *bufio.Writer, *http2.Framer, error) {
 	}
 	bw := bufio.NewWriter(raw)
 	framer := http2.NewFramer(bw, raw)
-	// Handshake deadline — if the peer isn't speaking H2, we want an error,
-	// not a hang.
+	// Handshake deadline, bail fast if the peer isn't speaking H2.
 	raw.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := framer.WriteSettings(); err != nil {
 		raw.Close()
@@ -215,8 +195,7 @@ func dialH2(addr string) (net.Conn, *bufio.Writer, *http2.Framer, error) {
 		raw.Close()
 		return nil, nil, nil, err
 	}
-	// Read frames until we've (a) seen the server's SETTINGS and acked it,
-	// and (b) seen the server's ack of our SETTINGS. Order isn't guaranteed.
+	// Wait for the server's SETTINGS and its ack of ours (order not guaranteed).
 	sawServerSettings := false
 	sawOurAck := false
 	for !(sawServerSettings && sawOurAck) {
@@ -259,8 +238,7 @@ func analyze(results []trialResult) {
 		return
 	}
 	fastWins := 0
-	// Track wins conditioned on the position of /fast in the coalesced pair,
-	// so we can see any residual bias from request order.
+	// Track wins by /fast's position to detect residual ordering bias.
 	fastFirstPosWins, fastFirstPosN := 0, 0
 	fastSecondPosWins, fastSecondPosN := 0, 0
 	for _, r := range results {
@@ -296,14 +274,11 @@ func analyze(results []trialResult) {
 			fastSecondPosWins, fastSecondPosN, 100*float64(fastSecondPosWins)/float64(fastSecondPosN))
 	}
 	fmt.Printf("one-sided p-value:   %.3g  (H0: no timing difference)\n", pval)
-	// Wilson 95% CI for a proportion — more honest than normal approx at
-	// extreme p.
+	// Wilson 95% CI — more accurate than normal approximation near p=0/1.
 	lo, hi := wilsonCI(fastWins, n, 1.96)
 	fmt.Printf("Wilson 95%% CI:       [%.3f, %.3f]\n", lo, hi)
 
-	// If the two position-conditional rates diverge sharply, the signal is
-	// contaminated by request-order bias, and -interleave isn't enough.
-	// Flag that.
+	// Warn if ordering bias is dominating the signal despite -interleave.
 	if fastFirstPosN > 30 && fastSecondPosN > 30 {
 		d := math.Abs(float64(fastFirstPosWins)/float64(fastFirstPosN) -
 			float64(fastSecondPosWins)/float64(fastSecondPosN))
@@ -374,10 +349,3 @@ func wilsonCI(k, n int, z float64) (float64, float64) {
 	}
 	return lo, hi
 }
-
-// sort helper kept so the imports stay honest if you extend the analysis
-// with per-trial latency sorting later.
-var _ = sort.Ints
-
-// silence unused-import complaints from context if you extend with timeouts
-var _ = context.Background
