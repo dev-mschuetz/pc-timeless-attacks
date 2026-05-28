@@ -165,7 +165,7 @@ client.go              # Client mode, H2 dial, statistical analysis
 run-experiment.ps1     # PowerShell sweep harness
 gen_chart.py           # Generates results/detection_chart.png from sweep data
 go.mod / go.sum        # Module definition (Go 1.26.2)
-timeless.exe           # Pre-built Windows binary
+timeless.exe           # (Produced by build)
 results/
   results.csv          # Aggregated sweep output
   raw/                 # Per-data-point client stdout and server logs
