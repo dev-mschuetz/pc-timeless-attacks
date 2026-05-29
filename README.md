@@ -5,7 +5,7 @@ This project is a Go proof-of-concept of the HTTP/2 concurrency-based timing att
 > **"Timeless Timing Attacks: Exploiting Concurrency to Leak Secrets over Remote Connections"**
 > Tom Van Goethem, Christina Pöpper, Wouter Joosen, Mathy Vanhoef, USENIX Security 2020
 
-For educational use only.
+> **Responsible use.** The server is an intentionally vulnerable demo that runs locally. Do not point the client at third-party servers. The technique shown here detects secret-dependent processing-time differences on arbitrary HTTP/2 servers, and using it against systems without authorization is unlawful.
 
 ## The Paper
 
@@ -160,16 +160,17 @@ Iteration counts selected for the sweep and their approximate delays on this har
 ## Project Structure
 
 ```
-server.go              # Server mode, calibrate mode, TLS cert generation, flags, main
-client.go              # Client mode, H2 dial, statistical analysis
-run-experiment.ps1     # PowerShell sweep harness
-gen_chart.py           # Generates results/detection_chart.png from sweep data
-go.mod / go.sum        # Module definition (Go 1.26.2)
-timeless.exe           # (Produced by build)
-results/
-  results.csv          # Aggregated sweep output
-  raw/                 # Per-data-point client stdout and server logs
-  detection_chart.png  # Chart generated from the last sweep
+TimelessAttack/
+├── server.go                    server mode, calibrate mode, TLS cert generation, flags, main
+├── client.go                    client mode, H2 dial, statistical analysis
+├── run-experiment.ps1           PowerShell sweep harness
+├── go.mod                       module definition (Go 1.26.2)
+├── go.sum                       dependency checksums
+├── timeless.exe                 produced by build
+└── results/
+    ├── results.csv              aggregated sweep output
+    ├── raw/                     per-data-point client stdout and server logs
+    └── detection_chart.png      chart generated from the sample sweep
 ```
 
 ## Dependencies
